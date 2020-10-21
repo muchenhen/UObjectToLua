@@ -1,6 +1,0 @@
-D:\workplace\XGame_Unreal\trunk\XGame\Plugins\UObjectToLua\Intermediate\Build\Win64\UE4Editor\Development\UObjectToLua\Definitions.UObjectToLua.h
-D:/workplace/XGame_Unreal/trunk/XGame/Plugins/UObjectToLua/Source/UObjectToLua/Private/ObjectToLua.cpp
-D:\workplace\XGame_Unreal\trunk\XGame\Plugins\UObjectToLua\Source\UObjectToLua\Public\ObjectToLua.h
-D:/workplace/XGame_Unreal/trunk/XGame/Plugins/UObjectToLua/Source/UObjectToLua/Private/ObjectToLuaParser.cpp
-D:\workplace\XGame_Unreal\trunk\XGame\Plugins\UObjectToLua\Source\UObjectToLua\Public\ObjectToLuaParser.h
-D:\workplace\XGame_Unreal\trunk\XGame\Plugins\UObjectToLua\Intermediate\Build\Win64\UE4Editor\Inc\UObjectToLua\ObjectToLuaParser.generated.h

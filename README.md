@@ -1,6 +1,12 @@
 # UObjectToLua
 获取UObject的UPROPERTY信息的静态函数库
 
+#### 更新
+
+##### 2020-10-21
+
+增加了对TSet和UEnum的支持
+
 #### 注意事项
 
 目前支持基本数据类型，int，float，bool，FString，TArray（支持嵌套），TMap（支持嵌套），自定义类，FVector，FRotator，**无法处理自定义结构体**

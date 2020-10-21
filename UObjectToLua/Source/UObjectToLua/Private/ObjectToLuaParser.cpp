@@ -168,6 +168,31 @@ FString CheckUproperType(UProperty* Property, UObject* Object)
 		UObjectAllNames += "},";
 		return UObjectAllNames;
 	}
+	else if (USetProperty* SetProperty = Cast<USetProperty>(Property))
+	{
+		FString tempName = Property->GetName();
+		FScriptSetHelper SetHelper(SetProperty, SetProperty->ContainerPtrToValuePtr<void>(Object));
+		FString SetAllNames = tempName + "={";
+		for (int i = 0; i < SetHelper.Num(); i++)
+		{
+			void* ValuePtr = SetHelper.GetElementPtr(i);
+			SetAllNames += CheckUproperType(SetProperty->ElementProp, ValuePtr);
+			SetAllNames.RemoveAt(SetAllNames.Len() - 1);
+			SetAllNames += "=true,";
+		}
+		SetAllNames += "},";
+		return SetAllNames;
+	}
+	else if (UEnumProperty* EnumProperty = Cast<UEnumProperty>(Property))
+	{
+		FString tempName = Property->GetName();
+		FString EnumAllNames = tempName + "=";
+		uint8 tempint8 = GetPropertyValue<uint8>(Property, Object);
+		FString int8string = FString::FromInt(tempint8);
+		EnumAllNames += int8string;
+		EnumAllNames += ",";
+		return EnumAllNames;
+	}
 	return FString();
 }
 
@@ -300,6 +325,31 @@ FString CheckUproperType(UProperty* Property, void* Object)
 		tempName += UObjectToLuaParser::UObjectToLuaString(tempUObject);
 		return tempName + ",";
 	}
+	else if (USetProperty* SetProperty = Cast<USetProperty>(Property))
+	{
+		FString tempName = Property->GetName();
+		FScriptSetHelper SetHelper(SetProperty, SetProperty->ContainerPtrToValuePtr<void>(Object));
+		FString SetAllNames = tempName + "={";
+		for (int i = 0; i < SetHelper.Num(); i++)
+		{
+			void* ValuePtr = SetHelper.GetElementPtr(i);
+			SetAllNames += CheckUproperType(SetProperty->ElementProp, ValuePtr);
+			SetAllNames.RemoveAt(SetAllNames.Len() - 1);
+			SetAllNames += "=true,";
+		}
+		SetAllNames += "},";
+		return SetAllNames;
+	}
+	else if (UEnumProperty* EnumProperty = Cast<UEnumProperty>(Property))
+	{
+		FString tempName = Property->GetName();
+		FString EnumAllNames = tempName + "=";
+		uint8 tempint8 = GetPropertyValue<uint8>(Property, Object);
+		FString int8string = FString::FromInt(tempint8);
+		EnumAllNames += int8string;
+		EnumAllNames += ",";
+		return EnumAllNames;
+	}
 	return FString();
 }
 
@@ -365,7 +415,7 @@ FString CheckUproperTypeForMap(UProperty* Property, void* Object)
 			void* KeyObj = MapHelper.GetKeyPtr(i);
 			KeyName = CheckUproperTypeForMap(MapProperty->KeyProp, KeyObj);
 			ValueName = CheckUproperType(MapProperty->ValueProp, KeyObj);
-			MapName += KeyName + " = " + ValueName;
+			MapName += KeyName + "=" + ValueName;
 		}
 		MapName += "},";
 		return MapName;
@@ -376,9 +426,9 @@ FString CheckUproperTypeForMap(UProperty* Property, void* Object)
 		{
 			FString VectorAll = Property->GetName() + "={";
 			FVector vec = GetPropertyValue<FVector>(Property, Object);
-			VectorAll = VectorAll + "X = " + FString::SanitizeFloat(vec.X) + ",";
-			VectorAll = VectorAll + "Y = " + FString::SanitizeFloat(vec.Y) + ",";
-			VectorAll = VectorAll + "Z = " + FString::SanitizeFloat(vec.Z) + ",";
+			VectorAll = VectorAll + "X=" + FString::SanitizeFloat(vec.X) + ",";
+			VectorAll = VectorAll + "Y=" + FString::SanitizeFloat(vec.Y) + ",";
+			VectorAll = VectorAll + "Z=" + FString::SanitizeFloat(vec.Z) + ",";
 			VectorAll = VectorAll + "},";
 			return VectorAll;
 		}
@@ -386,9 +436,9 @@ FString CheckUproperTypeForMap(UProperty* Property, void* Object)
 		{
 			FString RotatorAll = Property->GetName() + "={";
 			FRotator rot = GetPropertyValue<FRotator>(Property, Object);
-			RotatorAll = RotatorAll + "Pitch = " + FString::SanitizeFloat(rot.Pitch) + ",";
-			RotatorAll = RotatorAll + "Yaw = " + FString::SanitizeFloat(rot.Yaw) + ",";
-			RotatorAll = RotatorAll + "Roll = " + FString::SanitizeFloat(rot.Roll) + ",";
+			RotatorAll = RotatorAll + "Pitch=" + FString::SanitizeFloat(rot.Pitch) + ",";
+			RotatorAll = RotatorAll + "Yaw=" + FString::SanitizeFloat(rot.Yaw) + ",";
+			RotatorAll = RotatorAll + "Roll=" + FString::SanitizeFloat(rot.Roll) + ",";
 			RotatorAll = RotatorAll + "},";
 			return RotatorAll;
 		}
@@ -400,6 +450,31 @@ FString CheckUproperTypeForMap(UProperty* Property, void* Object)
 		UObject* tempUObject = GetPropertyValue<UObject*>(ObjectProperty, Object);
 		tempName = ObjectProperty->GetName();
 		UObjectToLuaParser::UObjectToLuaString(tempUObject);
+	}
+	else if (USetProperty* SetProperty = Cast<USetProperty>(Property))
+	{
+		FString tempName = Property->GetName();
+		FScriptSetHelper SetHelper(SetProperty, SetProperty->ContainerPtrToValuePtr<void>(Object));
+		FString SetAllNames = tempName + "={";
+		for (int i = 0; i < SetHelper.Num(); i++)
+		{
+			void* ValuePtr = SetHelper.GetElementPtr(i);
+			SetAllNames += CheckUproperType(SetProperty->ElementProp, ValuePtr);
+			SetAllNames.RemoveAt(SetAllNames.Len() - 1);
+			SetAllNames += "=true,";
+		}
+		SetAllNames += "},";
+		return SetAllNames;
+	}
+	else if (UEnumProperty* EnumProperty = Cast<UEnumProperty>(Property))
+	{
+		FString tempName = Property->GetName();
+		FString EnumAllNames = tempName + "=";
+		uint8 tempint8 = GetPropertyValue<uint8>(Property, Object);
+		FString int8string = FString::FromInt(tempint8);
+		EnumAllNames += int8string;
+		EnumAllNames += ",";
+		return EnumAllNames;
 	}
 	return FString();
 }
@@ -616,6 +691,53 @@ void CheckSetType(UProperty* Property, void* Object, FString value)
 			}
 			SetPropertyValue(Property, Object, FRotator(Fr[0], Fr[1], Fr[2]));
 		}
+	}
+	else if (USetProperty* SetProperty = Cast<USetProperty>(Property))
+	{
+		//----进一步处理m字符串
+		TArray<FString> setKey;//存放key值
+
+		//去掉前后的大括号
+		value.RemoveAt(0, 1);
+		value.RemoveAt(value.Len() - 1, 1);
+
+		FScriptSetHelper setHelper(SetProperty, SetProperty->ContainerPtrToValuePtr<void>(Object));
+		
+		//按照逗号拆分
+		FString tempFv="";
+		for (int i = 0; i < value.Len(); i++)
+		{
+			if (value[i] != ',')
+			{
+				tempFv += value[i];
+			}
+			else if (value[i] == ',')
+			{
+				//去掉=true
+				//tempFv.RemoveAt(0, 1);
+				tempFv.RemoveAt(tempFv.Len() - 5, 5);
+
+				setKey.Add(tempFv);
+				tempFv.Empty();
+				continue;
+			}
+		}
+
+		setHelper.EmptyElements();
+
+		for (int i = 0; i < setKey.Num(); i++)
+		{	
+			setHelper.AddUninitializedValue();
+			void* valuePtr = setHelper.GetElementPtr(i);
+			CheckSetType(SetProperty->ElementProp, valuePtr, setKey[i]);
+		}
+	}
+	else if (UEnumProperty* EnumProperty = Cast<UEnumProperty>(Property))
+	{
+		UEnum* tempEnum = EnumProperty->GetEnum();
+		int32 strint = FCString::Atoi(*value);
+		FName name = tempEnum->GetNameByValue(strint);
+		SetPropertyValue(Property, Object, strint);
 	}
 	else if (UObjectProperty* ObjectProperty = Cast<UObjectProperty>(Property))
 	{

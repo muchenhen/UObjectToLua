@@ -1,9 +1,0 @@
-{
-	"RemapUnityFiles": 
-	{
-		"Module.UObjectToLua.cpp.obj": [
-			"UObjectToLua.cpp.obj",
-			"UObjectToLuaParser.cpp.obj"
-		]
-	}
-}
