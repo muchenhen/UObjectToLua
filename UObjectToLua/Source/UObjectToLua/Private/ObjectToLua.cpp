@@ -16,5 +16,5 @@ void FUObjectToLuaModule::ShutdownModule()
 }
 
 #undef LOCTEXT_NAMESPACE
-	
+
 IMPLEMENT_MODULE(FUObjectToLuaModule, UObjectToLua)

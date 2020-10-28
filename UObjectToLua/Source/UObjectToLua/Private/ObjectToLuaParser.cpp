@@ -1,11 +1,7 @@
 #include "ObjectToLuaParser.h"
+#include "Math/UnrealMathUtility.h"
 
-FString CheckUproperType(UProperty* Property, void* Object);//重载函数，已经是Uproperty的object是void*类型，无法转换成UObject*，需要重载函数
-FString CheckUproperType(UProperty* Property, UObject* Object);//检查Object的UProperty的类型并返回其值的FString
-FString CheckUproperTypeForMap(UProperty* Property, void* Object);//检查Map的Key的类型，key的返回必须加上[]，而且key可以是各种基本类型，单独处理
-void CheckSetType(UProperty* Property, void* Object, FString value);//检查Object的Uproperty的类型并把value字符串转换成对应值并赋值
-UObject* SetObj(UObject* object, FString nameAndValue);//Object的UObjectProperty赋值用，返回一个UObject*
-FString CheckUproperTypeForVal(UProperty* Property, UObject* Object);
+DEFINE_LOG_CATEGORY(ObjectToLua);
 
 //加载UClass模板
 template<typename T>
@@ -57,429 +53,380 @@ bool SetPropertyValue(UProperty* Property, void* Object, ValueType Value)
 	return true;
 }
 
-FString CheckUproperType(UProperty* Property, UObject* Object)
+FString UObjectToLuaParser::ToCompressFloatStr(float F, bool DefaultAsEmpty)
 {
-	if (Cast<UBoolProperty>(Property))
+	float Res = (int)(F * 100.0f + 0.5f) / 100.0f;
+	if (DefaultAsEmpty && FMath::IsNearlyZero(Res))
 	{
-		FString tempName = Property->GetName();
-		bool tempBool = GetPropertyValue<bool>(Property, Object);
-		FString boolString = tempBool ? TEXT("true") : TEXT("false");
+		return FString();
+	}
+	else
+	{
+		return FString::SanitizeFloat(Res);
+	}
+}
 
-		FString Text = tempName + "=" + boolString + ',';
-		return Text;
-	}
-	else if (Cast<UIntProperty>(Property))
+FString UObjectToLuaParser::ToObjectStr(UObject* Object, bool DefaultAsEmpty)
+{
+	FString TotalALLNames;
+	int ElNum = 0;
+	//遍历所有被UProperty标记的成员
+	for (TFieldIterator<UProperty> PropertyIterator(Object->GetClass()); PropertyIterator; ++PropertyIterator)
 	{
-		FString tempName = Property->GetName();
-		int32 tempInt = GetPropertyValue<int>(Property, Object);
-		FString temptempString = FString::FromInt(GetPropertyValue<int32>(Property, Object));
+		UProperty* Property = *PropertyIterator;
+		FString PropertyName = Property->GetName();
 
-		FString Text = tempName + "=" + temptempString + ',';
-		return Text;
-	}
-	else if (Cast<UFloatProperty>(Property))
-	{
-		FString tempName = Property->GetName();
-		float tempFloat = GetPropertyValue<float>(Property, Object);
-		FString temptempString = FString::SanitizeFloat(tempFloat);
+		//判断UProperty类型
+		FString KVStr = CheckUproperType(Property, Object, DefaultAsEmpty);
 
-		FString Text = tempName + "=" + temptempString + ',';
-		return Text;
+		if (!KVStr.IsEmpty())
+		{
+			if (ElNum > 0)
+			{
+				TotalALLNames.Append(",");
+			}
+			TotalALLNames.Append(KVStr);
+			ElNum++;
+		}
 	}
-	else if (Cast<UStrProperty>(Property))
-	{
-		FString tempName = Property->GetName();
-		FString tempString = GetPropertyValue<FString>(Property, Object);
 
-		FString Text = tempName + "='" + tempString + "'" + ',';
-		return Text;
-	}
-	else if (UArrayProperty* ArrayProperty = Cast<UArrayProperty>(Property))
+	if (DefaultAsEmpty && TotalALLNames.IsEmpty())
 	{
-		FString tempName = Property->GetName();
-		FScriptArrayHelper ArrayHelper(ArrayProperty, ArrayProperty->ContainerPtrToValuePtr<void>(Object));
-		FString ArrayAllNames = tempName + "={";
-		for (int i = 0; i < ArrayHelper.Num(); i++)
-		{
-			void* ValuePtr = ArrayHelper.GetRawPtr(i);
-			ArrayAllNames += CheckUproperType(ArrayProperty->Inner, ValuePtr);
-		}
-		ArrayAllNames += "},";
-		return ArrayAllNames;
+		return FString();
 	}
-	else if (UMapProperty* MapProperty = Cast<UMapProperty>(Property))
+	else
 	{
-		FString tempName = Property->GetName();
-		FScriptMapHelper MapHelper(MapProperty, MapProperty->ContainerPtrToValuePtr<void>(Object));
-		FString KeyName;
-		FString ValueName;
-		FString MapName = tempName + "={";
-		for (int i = 0; i < MapHelper.Num(); i++)
-		{
-			void* KeyObj = MapHelper.GetKeyPtr(i);
-			KeyName = CheckUproperTypeForMap(MapProperty->KeyProp, KeyObj);
-			ValueName = CheckUproperType(MapProperty->ValueProp, KeyObj);
-			MapName += KeyName + "=" + ValueName;
-		}
-		MapName += "},";
-		return MapName;
+		return FString::Printf(TEXT("{%s}"), *TotalALLNames);
 	}
-	else if (UStructProperty* StructProperty = Cast<UStructProperty>(Property))
+}
+
+FString UObjectToLuaParser::ToStructStr(UScriptStruct* Struct, void* Object, bool DefaultAsEmpty)
+{
+	FString TotalALLNames;
+	int ElNum = 0;
+	UField* Field = Struct->Children;
+	while (Field)
 	{
-		if (StructProperty->Struct == TBaseStructure<FVector>::Get())
+		// Get Blueprint name
+		if (UProperty * Property = Cast<UProperty>(Field))
 		{
-			FString VectorAll = Property->GetName() + "={";
-			FVector vec = GetPropertyValue<FVector>(Property, Object);
-			VectorAll = VectorAll + "X=" + FString::SanitizeFloat(vec.X) + ",";
-			VectorAll = VectorAll + "Y=" + FString::SanitizeFloat(vec.Y) + ",";
-			VectorAll = VectorAll + "Z=" + FString::SanitizeFloat(vec.Z) + ",";
-			VectorAll = VectorAll + "},";
-			return VectorAll;
-		}
-		else if (StructProperty->Struct == TBaseStructure<FRotator>::Get())
-		{
-			FString RotatorAll = Property->GetName() + "={";
-			FRotator rot = GetPropertyValue<FRotator>(Property, Object);
-			RotatorAll = RotatorAll + "Pitch=" + FString::SanitizeFloat(rot.Pitch) + ",";
-			RotatorAll = RotatorAll + "Yaw=" + FString::SanitizeFloat(rot.Yaw) + ",";
-			RotatorAll = RotatorAll + "Roll=" + FString::SanitizeFloat(rot.Roll) + ",";
-			RotatorAll = RotatorAll + "},";
-			return RotatorAll;
-		}
-	}
-	else if (UObjectProperty* ObjectProperty = Cast<UObjectProperty>(Property))
-	{
-		FString tempName = Property->GetName();
-		UObject* tempUObject = GetPropertyValue<UObject*>(ObjectProperty, Object);
-		FString UObjectAllNames = tempName + "={";
-		if (tempUObject == nullptr)
-		{
-			return UObjectAllNames += "},";
-		}
-		for (TFieldIterator<UProperty> IT(tempUObject->GetClass()); IT; ++IT)
-		{
-			UProperty* Propertyp = *IT;
+			FString PropertyName = Property->GetName();
 
 			//判断UProperty类型
-			FString anoTempString = CheckUproperType(Propertyp, tempUObject);
-			UObjectAllNames += anoTempString;
-			//UObjectAllNames += " ";
+			FString KVStr = CheckUproperType(Property, Object, DefaultAsEmpty);
+
+			if (!KVStr.IsEmpty())
+			{
+				if (ElNum > 0)
+				{
+					TotalALLNames.Append(",");
+				}
+				TotalALLNames.Append(KVStr);
+				ElNum++;
+			}
 		}
-		UObjectAllNames += "},";
-		return UObjectAllNames;
+
+		// Go to next member
+		Field = Field->Next;
 	}
-	else if (USetProperty* SetProperty = Cast<USetProperty>(Property))
+
+	if (DefaultAsEmpty && TotalALLNames.IsEmpty())
 	{
-		FString tempName = Property->GetName();
-		FScriptSetHelper SetHelper(SetProperty, SetProperty->ContainerPtrToValuePtr<void>(Object));
-		FString SetAllNames = tempName + "={";
-		for (int i = 0; i < SetHelper.Num(); i++)
-		{
-			void* ValuePtr = SetHelper.GetElementPtr(i);
-			SetAllNames += CheckUproperType(SetProperty->ElementProp, ValuePtr);
-			SetAllNames.RemoveAt(SetAllNames.Len() - 1);
-			SetAllNames += "=true,";
-		}
-		SetAllNames += "},";
-		return SetAllNames;
+		return FString();
 	}
-	else if (UEnumProperty* EnumProperty = Cast<UEnumProperty>(Property))
+	else
 	{
-		FString tempName = Property->GetName();
-		FString EnumAllNames = tempName + "=";
-		uint8 tempint8 = GetPropertyValue<uint8>(Property, Object);
-		FString int8string = FString::FromInt(tempint8);
-		EnumAllNames += int8string;
-		EnumAllNames += ",";
-		return EnumAllNames;
+		return FString::Printf(TEXT("{%s}"), *TotalALLNames);
 	}
-	return FString();
 }
 
-FString CheckUproperTypeForVal(UProperty* Property, UObject* Object)
+FString UObjectToLuaParser::CheckUproperType(UProperty* Property, void* Object, bool DefaultAsEmpty)
+{
+	const FString& PropertyStr = GetPropertyValueLuaStr(Property, Object, DefaultAsEmpty);
+	if (PropertyStr.IsEmpty() && DefaultAsEmpty)
+	{
+		return FString();
+	}
+	else
+	{
+		return FString::Printf(TEXT("%s=%s"), *Property->GetName(), *PropertyStr);
+	}
+}
+
+FString UObjectToLuaParser::GetPropertyValueLuaStr(UProperty* Property, void* Object, bool DefaultAsEmpty)
 {
 	if (Cast<UBoolProperty>(Property))
 	{
 		bool tempBool = GetPropertyValue<bool>(Property, Object);
-		FString boolString = tempBool ? TEXT("true") : TEXT("false");
-		return boolString;
+		if (DefaultAsEmpty && !tempBool)
+		{
+			return FString();
+		}
+		else
+		{
+			return tempBool ? FString("true") : FString("false");
+		}
 	}
 	else if (Cast<UIntProperty>(Property))
 	{
 		int32 tempInt = GetPropertyValue<int>(Property, Object);
-		FString temptempString = FString::FromInt(GetPropertyValue<int32>(Property, Object));
-		return temptempString;
+
+		if (DefaultAsEmpty && tempInt == 0)
+		{
+			return FString();
+		}
+		else
+		{
+			return FString::FromInt(tempInt);
+		}
 	}
 	else if (Cast<UFloatProperty>(Property))
 	{
 		float tempFloat = GetPropertyValue<float>(Property, Object);
-		FString temptempString = FString::SanitizeFloat(tempFloat);
-		return temptempString;
+		return ToCompressFloatStr(tempFloat, DefaultAsEmpty);
 	}
 	else if (Cast<UStrProperty>(Property))
 	{
 		FString tempString = GetPropertyValue<FString>(Property, Object);
-		return tempString;
+		if (DefaultAsEmpty && tempString.IsEmpty())
+		{
+			return FString();
+		}
+		else
+		{
+			return FString::Printf(TEXT("'%s'"), *tempString);
+		}
 	}
-	return FString();
-}
-
-FString CheckUproperType(UProperty* Property, void* Object)
-{
-	if (Cast<UBoolProperty>(Property))
+	else if (UArrayProperty * ArrayProperty = Cast<UArrayProperty>(Property))
 	{
-		FString tempName = Property->GetName();
-		bool tempBool = GetPropertyValue<bool>(Property, Object);
-
-		FString boolString = tempBool ? TEXT("true") : TEXT("false");
-		boolString += "," ;
-		return boolString;
-	}
-	else if (Cast<UIntProperty>(Property))
-	{
-		FString tempName = Property->GetName();
-		int32 tempInt = GetPropertyValue<int>(Property, Object);
-		
-		FString temptempString = FString::FromInt(GetPropertyValue<int32>(Property, Object)) + ',';
-		return temptempString;
-	}
-	else if (Cast<UFloatProperty>(Property))
-	{
-		FString tempName = Property->GetName();
-		float tempFloat = GetPropertyValue<float>(Property, Object);
-
-		FString temptempString = FString::SanitizeFloat(GetPropertyValue<float>(Property, Object)) + ',';
-		return temptempString;
-	}
-	else if (Cast<UStrProperty>(Property))
-	{
-		FString tempName = Property->GetName();
-
-		FString tempString ="'" + GetPropertyValue<FString>(Property, Object) + "'" + ',';
-		return tempString;
-	}
-	else if (UArrayProperty* ArrayProperty = Cast<UArrayProperty>(Property))
-	{
-		FString tempName = Property->GetName();
 		FScriptArrayHelper ArrayHelper(ArrayProperty, ArrayProperty->ContainerPtrToValuePtr<void>(Object));
-		FString ArrayAllNames = tempName + "={";
+		int ArrNum = 0;
+		FString ArrayAllNames = "{";
+		int NilNum = 0;
 		for (int i = 0; i < ArrayHelper.Num(); i++)
 		{
 			void* ValuePtr = ArrayHelper.GetRawPtr(i);
-			ArrayAllNames += CheckUproperType(ArrayProperty->Inner, ValuePtr);
+			FString InnerStr = GetPropertyValueLuaStr(ArrayProperty->Inner, ValuePtr, DefaultAsEmpty);
+			if (DefaultAsEmpty && InnerStr.IsEmpty())
+			{
+				NilNum++;
+			}
+			else
+			{
+				if (ArrNum > 0)
+				{
+					ArrayAllNames.Append(",");
+				}
+
+				ArrNum += NilNum;
+				for (int j = 0; j < NilNum; j++)
+				{
+					ArrayAllNames.Append("nil,");
+				}
+				NilNum = 0;
+				
+				ArrayAllNames.Append(InnerStr.IsEmpty() ? TEXT("nil") : *InnerStr);
+				ArrNum++;
+			}
 		}
-		ArrayAllNames += "},";
-		return ArrayAllNames;
+		if (DefaultAsEmpty && ArrNum == 0)
+		{
+			return FString();
+		}
+		else
+		{
+			ArrayAllNames.Append("}");
+			return ArrayAllNames;
+		}
 	}
-	else if (UMapProperty* MapProperty = Cast<UMapProperty>(Property))
+	else if (UMapProperty * MapProperty = Cast<UMapProperty>(Property))
 	{
-		FString tempName = Property->GetName();
 		FScriptMapHelper MapHelper(MapProperty, MapProperty->ContainerPtrToValuePtr<void>(Object));
 		FString KeyName;
 		FString ValueName;
-		FString MapName = tempName + "={";
+		int MapNum = 0;
+		FString MapStr = "{";
 		for (int i = 0; i < MapHelper.Num(); i++)
 		{
-			void* KeyObj = MapHelper.GetKeyPtr(i);
-			KeyName = CheckUproperTypeForMap(MapProperty->KeyProp, KeyObj);
-			ValueName = CheckUproperType(MapProperty->ValueProp, KeyObj);
-			MapName += KeyName + " = " + ValueName;
+			KeyName = GetPropertyValueLuaStr(MapProperty->KeyProp, MapHelper.GetKeyPtr(i), DefaultAsEmpty);
+			if (KeyName.IsEmpty())
+			{
+				continue;
+			}
+			ValueName = GetPropertyValueLuaStr(MapProperty->ValueProp, MapHelper.GetValuePtr(i), DefaultAsEmpty);
+			if (ValueName.IsEmpty())
+			{
+				continue;
+			}
+			if (MapNum > 0)
+			{
+				MapStr.Append(",");
+			}
+			MapStr.Append(FString::Printf(TEXT("[%s]=%s"), *KeyName, *ValueName));
+			MapNum++;
 		}
-		MapName += "},";
-		return MapName;
+		if (DefaultAsEmpty && MapNum == 0)
+		{
+			return FString();
+		}
+		else
+		{
+			MapStr.Append("}");
+			return MapStr;
+		}
 	}
-	else if (UStructProperty* StructProperty = Cast<UStructProperty>(Property))
+	else if (UStructProperty * StructProperty = Cast<UStructProperty>(Property))
 	{
 		if (StructProperty->Struct == TBaseStructure<FVector>::Get())
 		{
-			FString VectorAll = Property->GetName() + "={";
 			FVector vec = GetPropertyValue<FVector>(Property, Object);
-			VectorAll = VectorAll + "X = " + FString::SanitizeFloat(vec.X) + ",";
-			VectorAll = VectorAll + "Y = " + FString::SanitizeFloat(vec.Y) + ",";
-			VectorAll = VectorAll + "Z = " + FString::SanitizeFloat(vec.Z) + ",";
-			VectorAll = VectorAll + "},";
-			return VectorAll;
+			if (DefaultAsEmpty && vec == FVector::ZeroVector)
+			{
+				return FString();
+			}
+			else
+			{
+				FString VectorAll = "{";
+				VectorAll.Append(FString::Printf(TEXT("X=%s,"), *ToCompressFloatStr(vec.X)));
+				VectorAll.Append(FString::Printf(TEXT("Y=%s,"), *ToCompressFloatStr(vec.Y)));
+				VectorAll.Append(FString::Printf(TEXT("Z=%s}"), *ToCompressFloatStr(vec.Z)));
+				return VectorAll;
+			}
 		}
 		else if (StructProperty->Struct == TBaseStructure<FRotator>::Get())
 		{
-			FString RotatorAll = Property->GetName() + "={";
 			FRotator rot = GetPropertyValue<FRotator>(Property, Object);
-			RotatorAll = RotatorAll + "Pitch = " + FString::SanitizeFloat(rot.Pitch) + ",";
-			RotatorAll = RotatorAll + "Yaw = " + FString::SanitizeFloat(rot.Yaw) + ",";
-			RotatorAll = RotatorAll + "Roll = " + FString::SanitizeFloat(rot.Roll) + ",";
-			RotatorAll = RotatorAll + "},";
-			return RotatorAll;
+			if (DefaultAsEmpty && rot == FRotator::ZeroRotator)
+			{
+				return FString();
+			}
+			else
+			{
+				FString RotatorAll = "{";
+				RotatorAll.Append(FString::Printf(TEXT("Pitch=%s,"), *ToCompressFloatStr(rot.Pitch)));
+				RotatorAll.Append(FString::Printf(TEXT("Yaw=%s,"), *ToCompressFloatStr(rot.Yaw)));
+				RotatorAll.Append(FString::Printf(TEXT("Roll=%s}"), *ToCompressFloatStr(rot.Roll)));
+				return RotatorAll;
+			}
 		}
-
+		else if (StructProperty->Struct == TBaseStructure<FSoftObjectPath>::Get())
+		{
+			FSoftObjectPath SoftObjectPath = GetPropertyValue<FSoftObjectPath>(Property, Object);
+			if (DefaultAsEmpty && !SoftObjectPath.IsValid())
+			{
+				return FString();
+			}
+			else
+			{
+				return FString::Printf(TEXT("'%s'"), *SoftObjectPath.GetAssetPathString());
+			}
+		}
+		else if (StructProperty->Struct == TBaseStructure<FSoftClassPath>::Get())
+		{
+			FSoftClassPath SoftClassPath = GetPropertyValue<FSoftClassPath>(Property, Object);
+			if (DefaultAsEmpty && !SoftClassPath.IsValid())
+			{
+				return FString();
+			}
+			else
+			{
+				return FString::Printf(TEXT("'%s'"), *SoftClassPath.GetAssetPathString());
+			}
+		}
+		else if(StructProperty->Struct->IsNative())
+		{
+			return ToStructStr(StructProperty->Struct, Object, DefaultAsEmpty);
+		}
+		else
+		{
+			UE_LOG(ObjectToLua, Warning, TEXT("Unrecognized Struct Property: %s"), *Property->GetName());
+			if (DefaultAsEmpty)
+			{
+				return FString();
+			}
+			else
+			{
+				return FString("nil");
+			}
+		}
 	}
-	else if (UObjectProperty* ObjectProperty = Cast<UObjectProperty>(Property))
+	else if (UObjectProperty * ObjectProperty = Cast<UObjectProperty>(Property))
 	{
-		FString tempName;
 		UObject* tempUObject = GetPropertyValue<UObject*>(ObjectProperty, Object);
+
+		if (!tempUObject)
+		{
+			if (DefaultAsEmpty)
+			{
+				return FString();
+			}
+			else
+			{
+				return FString("{}");
+			}
+		}
+		else
+		{
+			return ToObjectStr(tempUObject, DefaultAsEmpty);
+		}
+	}
+	else if (USetProperty * SetProperty = Cast<USetProperty>(Property))
+	{
+		FScriptSetHelper SetHelper(SetProperty, SetProperty->ContainerPtrToValuePtr<void>(Object));
+		int SetNum = 0;
+		FString SetAllNames = "{";
+		for (int i = 0; i < SetHelper.Num(); i++)
+		{
+			void* ValuePtr = SetHelper.GetElementPtr(i);
+			const FString& Key = GetPropertyValueLuaStr(SetProperty->ElementProp, ValuePtr, DefaultAsEmpty);
+			if (Key.IsEmpty())
+			{}
+			else
+			{
+				if (SetNum > 0)
+				{
+					SetAllNames.Append(",");
+				}
+				SetNum++;
+				SetAllNames.Append(FString::Printf(TEXT("[%s]=true"), *Key));
+			}
+		}
 		
-		if (tempUObject == nullptr)
+		if (DefaultAsEmpty && SetNum == 0)
 		{
-			return tempName + "={},";
+			return FString();
 		}
-
-		tempName += UObjectToLuaParser::UObjectToLuaString(tempUObject);
-		return tempName + ",";
-	}
-	else if (USetProperty* SetProperty = Cast<USetProperty>(Property))
-	{
-		FString tempName = Property->GetName();
-		FScriptSetHelper SetHelper(SetProperty, SetProperty->ContainerPtrToValuePtr<void>(Object));
-		FString SetAllNames = tempName + "={";
-		for (int i = 0; i < SetHelper.Num(); i++)
+		else
 		{
-			void* ValuePtr = SetHelper.GetElementPtr(i);
-			SetAllNames += CheckUproperType(SetProperty->ElementProp, ValuePtr);
-			SetAllNames.RemoveAt(SetAllNames.Len() - 1);
-			SetAllNames += "=true,";
+			SetAllNames.Append("}");
+			return SetAllNames;
 		}
-		SetAllNames += "},";
-		return SetAllNames;
 	}
-	else if (UEnumProperty* EnumProperty = Cast<UEnumProperty>(Property))
+	else if (UEnumProperty * EnumProperty = Cast<UEnumProperty>(Property))
 	{
-		FString tempName = Property->GetName();
-		FString EnumAllNames = tempName + "=";
 		uint8 tempint8 = GetPropertyValue<uint8>(Property, Object);
-		FString int8string = FString::FromInt(tempint8);
-		EnumAllNames += int8string;
-		EnumAllNames += ",";
-		return EnumAllNames;
+		if (DefaultAsEmpty && tempint8 == 0)
+		{
+			return FString();
+		}
+		else
+		{
+			return FString::FromInt(tempint8);
+		}
 	}
-	return FString();
+
+	UE_LOG(ObjectToLua, Warning, TEXT("Unrecognized Property: %s"), *Property->GetName());
+	if (DefaultAsEmpty)
+	{
+		return FString();
+	}
+	else
+	{
+		return FString("nil");
+	}
 }
 
-FString CheckUproperTypeForMap(UProperty* Property, void* Object)
-{
-	if (Cast<UBoolProperty>(Property))
-	{
-		FString tempName = Property->GetName();
-		bool tempBool = GetPropertyValue<bool>(Property, Object);
-		FString boolString = tempBool ? TEXT("true") : TEXT("false");
-
-		FString Text = "[" + boolString + "]";
-		return Text;
-	}
-	else if (Cast<UIntProperty>(Property))
-	{
-		FString tempName = Property->GetName();
-		int32 tempInt = GetPropertyValue<int>(Property, Object);
-		FString temptempString = FString::FromInt(GetPropertyValue<int32>(Property, Object));
-
-		FString Text = "[" + temptempString + "]";
-		return Text;
-	}
-	else if (Cast<UFloatProperty>(Property))
-	{
-		FString tempName = Property->GetName();
-		float tempFloat = GetPropertyValue<float>(Property, Object);
-		FString temptempString = FString::SanitizeFloat(GetPropertyValue<float>(Property, Object));
-
-		FString Text = "[" + temptempString + "]";
-		return Text;
-	}
-	else if (Cast<UStrProperty>(Property))
-	{
-		FString tempName = Property->GetName();
-		FString tempString = GetPropertyValue<FString>(Property, Object);
-
-		FString Text = "[" + tempString + "]";
-		return Text;
-	}
-	else if (UArrayProperty* ArrayProperty = Cast<UArrayProperty>(Property))
-	{
-		FString tempName = Property->GetName();
-		FScriptArrayHelper ArrayHelper(ArrayProperty, ArrayProperty->ContainerPtrToValuePtr<void>(Object));
-		FString ArrayAllNames = tempName + "={";
-		for (int i = 0; i < ArrayHelper.Num(); i++)
-		{
-			void* ValuePtr = ArrayHelper.GetRawPtr(i);
-			ArrayAllNames += CheckUproperType(ArrayProperty->Inner, ValuePtr);
-		}
-		ArrayAllNames += "},";
-		return ArrayAllNames;
-	}
-	else if (UMapProperty* MapProperty = Cast<UMapProperty>(Property))
-	{
-		FString tempName = Property->GetName();
-		FScriptMapHelper MapHelper(MapProperty, MapProperty->ContainerPtrToValuePtr<void>(Object));
-		FString KeyName;
-		FString ValueName;
-		FString MapName = tempName + "={";
-		for (int i = 0; i < MapHelper.Num(); i++)
-		{
-			void* KeyObj = MapHelper.GetKeyPtr(i);
-			KeyName = CheckUproperTypeForMap(MapProperty->KeyProp, KeyObj);
-			ValueName = CheckUproperType(MapProperty->ValueProp, KeyObj);
-			MapName += KeyName + "=" + ValueName;
-		}
-		MapName += "},";
-		return MapName;
-	}
-	else if (UStructProperty* StructProperty = Cast<UStructProperty>(Property))
-	{
-		if (StructProperty->Struct == TBaseStructure<FVector>::Get())
-		{
-			FString VectorAll = Property->GetName() + "={";
-			FVector vec = GetPropertyValue<FVector>(Property, Object);
-			VectorAll = VectorAll + "X=" + FString::SanitizeFloat(vec.X) + ",";
-			VectorAll = VectorAll + "Y=" + FString::SanitizeFloat(vec.Y) + ",";
-			VectorAll = VectorAll + "Z=" + FString::SanitizeFloat(vec.Z) + ",";
-			VectorAll = VectorAll + "},";
-			return VectorAll;
-		}
-		else if (StructProperty->Struct == TBaseStructure<FRotator>::Get())
-		{
-			FString RotatorAll = Property->GetName() + "={";
-			FRotator rot = GetPropertyValue<FRotator>(Property, Object);
-			RotatorAll = RotatorAll + "Pitch=" + FString::SanitizeFloat(rot.Pitch) + ",";
-			RotatorAll = RotatorAll + "Yaw=" + FString::SanitizeFloat(rot.Yaw) + ",";
-			RotatorAll = RotatorAll + "Roll=" + FString::SanitizeFloat(rot.Roll) + ",";
-			RotatorAll = RotatorAll + "},";
-			return RotatorAll;
-		}
-
-	}
-	else if (UObjectProperty* ObjectProperty = Cast<UObjectProperty>(Property))
-	{
-		FString tempName = Property->GetName();
-		UObject* tempUObject = GetPropertyValue<UObject*>(ObjectProperty, Object);
-		tempName = ObjectProperty->GetName();
-		UObjectToLuaParser::UObjectToLuaString(tempUObject);
-	}
-	else if (USetProperty* SetProperty = Cast<USetProperty>(Property))
-	{
-		FString tempName = Property->GetName();
-		FScriptSetHelper SetHelper(SetProperty, SetProperty->ContainerPtrToValuePtr<void>(Object));
-		FString SetAllNames = tempName + "={";
-		for (int i = 0; i < SetHelper.Num(); i++)
-		{
-			void* ValuePtr = SetHelper.GetElementPtr(i);
-			SetAllNames += CheckUproperType(SetProperty->ElementProp, ValuePtr);
-			SetAllNames.RemoveAt(SetAllNames.Len() - 1);
-			SetAllNames += "=true,";
-		}
-		SetAllNames += "},";
-		return SetAllNames;
-	}
-	else if (UEnumProperty* EnumProperty = Cast<UEnumProperty>(Property))
-	{
-		FString tempName = Property->GetName();
-		FString EnumAllNames = tempName + "=";
-		uint8 tempint8 = GetPropertyValue<uint8>(Property, Object);
-		FString int8string = FString::FromInt(tempint8);
-		EnumAllNames += int8string;
-		EnumAllNames += ",";
-		return EnumAllNames;
-	}
-	return FString();
-}
-
-void CheckSetType(UProperty* Property, void* Object, FString value)
+void UObjectToLuaParser::CheckSetType(UProperty* Property, void* Object, FString value)
 {
 	if (Cast<UBoolProperty>(Property))
 	{
@@ -691,6 +638,18 @@ void CheckSetType(UProperty* Property, void* Object, FString value)
 			}
 			SetPropertyValue(Property, Object, FRotator(Fr[0], Fr[1], Fr[2]));
 		}
+		else if (StructProperty->Struct == TBaseStructure<FSoftObjectPath>::Get())
+		{
+			value.RemoveAt(0, 1);
+			value.RemoveAt(value.Len() - 1, 1);
+			SetPropertyValue(Property, Object, FSoftObjectPath(value));
+		}
+		else if (StructProperty->Struct == TBaseStructure<FSoftClassPath>::Get())
+		{
+			value.RemoveAt(0, 1);
+			value.RemoveAt(value.Len() - 1, 1);
+			SetPropertyValue(Property, Object, FSoftClassPath(value));
+		}
 	}
 	else if (USetProperty* SetProperty = Cast<USetProperty>(Property))
 	{
@@ -754,7 +713,7 @@ void CheckSetType(UProperty* Property, void* Object, FString value)
 	}
 }
 
-UObject* SetObj(UObject* object, FString nameAndValue)
+UObject* UObjectToLuaParser::SetObj(UObject* object, FString nameAndValue)
 {
 	UObject* Object = object;
 
@@ -877,50 +836,30 @@ UObject* SetObj(UObject* object, FString nameAndValue)
 	return Object;
 }
 
-FString UObjectToLuaParser::UObjectToLuaString(UObject* Object)
+FString UObjectToLuaParser::UObjectToLuaString(UObject* Object, bool DefaultAsEmpty)
 {
-	FString TotalALLNames = "return{";
-
-	//遍历所有被UProperty标记的成员
-	for (TFieldIterator<UProperty> PropertyIterator(Object->GetClass()); PropertyIterator; ++PropertyIterator)
-	{
-		UProperty* Property = *PropertyIterator;
-		FString PropertyName = Property->GetName();
-
-		//判断UProperty类型
-		TotalALLNames += CheckUproperType(Property, Object);
-	}
-	TotalALLNames += "}";
-//  	UE_LOG(LogTemp, Warning, TEXT("%s"), *TotalALLNames);
-	return TotalALLNames;
+	return FString::Printf(TEXT("return %s"), *ToObjectStr(Object, DefaultAsEmpty));
 }
 
-FString UObjectToLuaParser::UObjectToLuaStringWithIgnore(UObject * Object, FString ignore)
+FString UObjectToLuaParser::UObjectToLuaStringWithIgnore(UObject * Object, FString Ignore, bool DefaultAsEmpty)
 {
 	TArray<FString> ignoreArray;
-
-	FString tempArray;
-	for (int i = 0; i < ignore.Len(); i++)
+	/*void* object = Cast<void>(Object);*/
+	FString MatchStr;
+	FString RestStr = Ignore;
+	while (RestStr.Split(",", &MatchStr, &RestStr))
 	{
-		if (ignore[i] != ',')
-		{
-			tempArray += ignore[i];
-		}
-		else
-		{
-			ignoreArray.Add(tempArray);
-			tempArray.Empty();
-		}
+		ignoreArray.Add(MatchStr);
+	}
+	ignoreArray.Add(RestStr);
+
+	if (ignoreArray.Num() <= 0)
+	{
+		return UObjectToLuaParser::UObjectToLuaString(Object, DefaultAsEmpty);
 	}
 
 	FString TotalALLNames;
-	if (ignoreArray.Num() <= 0)
-	{
-		TotalALLNames = UObjectToLuaParser::UObjectToLuaString(Object);
-		return TotalALLNames;
-	}
-
-	TotalALLNames = "return{";
+	int ElNum = 0;
 
 	//遍历所有被UProperty标记的成员
 	for (TFieldIterator<UProperty> PropertyIterator(Object->GetClass()); PropertyIterator; ++PropertyIterator)
@@ -935,61 +874,38 @@ FString UObjectToLuaParser::UObjectToLuaStringWithIgnore(UObject * Object, FStri
 		}
 
 		//判断UProperty类型
-		TotalALLNames += CheckUproperType(Property, Object);
+		FString KVStr = CheckUproperType(Property, Object, DefaultAsEmpty);
+		if (!KVStr.IsEmpty())
+		{
+			if (ElNum > 0)
+			{
+				TotalALLNames.Append(",");
+			}
+			TotalALLNames.Append(KVStr);
+			ElNum++;
+		}
 	}
-	TotalALLNames += "}";
-// 	UE_LOG(LogTemp, Warning, TEXT("%s"), *TotalALLNames);
-	return TotalALLNames;
-	
+	if (DefaultAsEmpty && TotalALLNames.IsEmpty())
+	{
+		return FString();
+	}
+	else
+	{
+		return FString::Printf(TEXT("return {%s}"), *TotalALLNames);
+	}
 }
 
-FString UObjectToLuaParser::UObjectToCSV(UObject * Object)
+FString UObjectToLuaParser::UObjectToCSV(UObject * Object, bool DefaultAsEmpty)
 {
-	FString csv = UObjectToLuaParser::UObjectToLuaString(Object);
-	int32 i = 0;
-	int32& index = i;
-	if (csv.Contains(TEXT(","), ESearchCase::CaseSensitive, ESearchDir::FromStart) 
-		|| csv.Contains(TEXT("\""), ESearchCase::CaseSensitive, ESearchDir::FromStart) 
-		|| csv.Contains(TEXT("\n"), ESearchCase::CaseSensitive, ESearchDir::FromStart))
-	{
-		for (int j = 0; j < csv.Len(); j++)
-		{
-			if (csv[j] == '"')
-			{
-				csv.InsertAt(j, '"');
-				j++;
-			}
-		}
-		csv.InsertAt(0, "\"");
-		csv.InsertAt(csv.Len(), "\"");
-	}
-	csv = csv.Replace(TEXT("return"), TEXT(""));
+	FString csv = CsvFormat(ToObjectStr(Object, DefaultAsEmpty));
 	csv.RemoveAt(0, 1);
 	csv.RemoveAt(csv.Len() - 1, 1);
 	return csv;
 }
 
-FString UObjectToLuaParser::UObjectToCSVwithIgnore(UObject * Object, FString ignore)
+FString UObjectToLuaParser::UObjectToCSVwithIgnore(UObject * Object, FString Ignore, bool DefaultAsEmpty)
 {
-	FString csv = UObjectToLuaParser::UObjectToLuaStringWithIgnore(Object, ignore);
-	int32 i = 0;
-	int32& index = i;
-	if (csv.Contains(TEXT(","), ESearchCase::CaseSensitive, ESearchDir::FromStart)
-		|| csv.Contains(TEXT("\""), ESearchCase::CaseSensitive, ESearchDir::FromStart)
-		|| csv.Contains(TEXT("\n"), ESearchCase::CaseSensitive, ESearchDir::FromStart))
-	{
-		for (int j = 0; j < csv.Len(); j++)
-		{
-			if (csv[j] == '"')
-			{
-				csv.InsertAt(j, '"');
-				j++;
-			}
-		}
-		csv.InsertAt(0, '"');
-		csv.InsertAt(csv.Len(), '"');
-	}
-	csv = csv.Replace(TEXT("return"), TEXT(""));
+	FString csv = CsvFormat(ToObjectStr(Object, DefaultAsEmpty));
 	csv.RemoveAt(0, 1);
 	csv.RemoveAt(csv.Len()-1, 1);
 	return csv;
@@ -1007,7 +923,7 @@ FString UObjectToLuaParser::GetAimValue(UObject* Object, FString Aim)
 
 		if (Aim == PropertyName)
 		{
-			TotalALLNames = CheckUproperTypeForVal(Property, Object);
+			TotalALLNames = UObjectToLuaParser::CheckUproperType(Property, Object);
 			break;
 		}
 	}
@@ -1344,9 +1260,9 @@ UObject* UObjectToLuaParser::CreateObject(UClass* className)
 	return Object;
 }
 
-FString UObjectToLuaParser::LuaStringToCSV(FString LuaString)
+FString UObjectToLuaParser::CsvFormat(FString Str)
 {
-	FString csv = LuaString;
+	FString csv = Str;
 	int32 i = 0;
 	int32& index = i;
 	if (csv.Contains(TEXT(","), ESearchCase::CaseSensitive, ESearchDir::FromStart)

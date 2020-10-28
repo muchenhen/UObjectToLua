@@ -1,7 +1,7 @@
 {
 	"FileVersion": 3,
 	"Version": 1,
-	"VersionName": "1.5",
+	"VersionName": "1.0",
 	"FriendlyName": "UObjectToLua",
 	"Description": "",
 	"Category": "Other",
@@ -18,7 +18,7 @@
 		{
 			"Name": "UObjectToLua",
 			"Type": "Editor",
-			"LoadingPhase": "Default"
+			"LoadingPhase": "default"
 		}
 	]
 }
