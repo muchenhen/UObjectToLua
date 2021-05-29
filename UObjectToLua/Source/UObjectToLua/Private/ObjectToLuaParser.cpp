@@ -1,9 +1,10 @@
 #include "ObjectToLuaParser.h"
 #include "Math/UnrealMathUtility.h"
+#include "Misc/AssertionMacros.h"
 
 DEFINE_LOG_CATEGORY(ObjectToLua);
 
-//¼ÓÔØUClassÄ£°å
+//åŠ è½½UClassæ¨¡æ¿
 template<typename T>
 UClass* loadClassT(const char* cls) {
 	FString path(UTF8_TO_TCHAR(cls));
@@ -24,7 +25,7 @@ UClass* loadClassT(const char* cls) {
 	return classObj;
 }
 
-//»ñÈ¡UPropertyµÄÄ£°å
+//è·å–UPropertyçš„æ¨¡æ¿
 template <typename ValueType>
 ValueType GetPropertyValue(UProperty* Property, void* Object)
 {
@@ -36,7 +37,7 @@ ValueType GetPropertyValue(UProperty* Property, void* Object)
 	return *SourceAddr;
 }
 
-//ÉèÖÃUPropertyµÄÄ£°å
+//è®¾ç½®UPropertyçš„æ¨¡æ¿
 template <typename ValueType>
 bool SetPropertyValue(UProperty* Property, void* Object, ValueType Value)
 {
@@ -70,13 +71,13 @@ FString UObjectToLuaParser::ToObjectStr(UObject* Object, bool DefaultAsEmpty)
 {
 	FString TotalALLNames;
 	int ElNum = 0;
-	//±éÀúËùÓĞ±»UProperty±ê¼ÇµÄ³ÉÔ±
+	//éå†æ‰€æœ‰è¢«UPropertyæ ‡è®°çš„æˆå‘˜
 	for (TFieldIterator<UProperty> PropertyIterator(Object->GetClass()); PropertyIterator; ++PropertyIterator)
 	{
 		UProperty* Property = *PropertyIterator;
 		FString PropertyName = Property->GetName();
 
-		//ÅĞ¶ÏUPropertyÀàĞÍ
+		//åˆ¤æ–­UPropertyç±»å‹
 		FString KVStr = CheckUproperType(Property, Object, DefaultAsEmpty);
 
 		if (!KVStr.IsEmpty())
@@ -100,7 +101,7 @@ FString UObjectToLuaParser::ToObjectStr(UObject* Object, bool DefaultAsEmpty)
 	}
 }
 
-FString UObjectToLuaParser::ToStructStr(UScriptStruct* Struct, void* Object, bool DefaultAsEmpty)
+FString UObjectToLuaParser::ToStructContentStr(UStruct* Struct, void* Object, bool DefaultAsEmpty)
 {
 	FString TotalALLNames;
 	int ElNum = 0;
@@ -112,7 +113,7 @@ FString UObjectToLuaParser::ToStructStr(UScriptStruct* Struct, void* Object, boo
 		{
 			FString PropertyName = Property->GetName();
 
-			//ÅĞ¶ÏUPropertyÀàĞÍ
+			//åˆ¤æ–­UPropertyç±»å‹
 			FString KVStr = CheckUproperType(Property, Object, DefaultAsEmpty);
 
 			if (!KVStr.IsEmpty())
@@ -128,6 +129,26 @@ FString UObjectToLuaParser::ToStructStr(UScriptStruct* Struct, void* Object, boo
 
 		// Go to next member
 		Field = Field->Next;
+	}
+	return TotalALLNames;
+}
+
+FString UObjectToLuaParser::ToStructStr(UStruct* Struct, void* Object, bool DefaultAsEmpty)
+{
+	FString TotalALLNames;
+	UStruct* CurrentStruct = Struct;
+	while (CurrentStruct)
+	{
+		FString StructContent = ToStructContentStr(CurrentStruct, Object, DefaultAsEmpty);
+		if (!StructContent.IsEmpty())
+		{
+			if (!TotalALLNames.IsEmpty())
+			{
+				TotalALLNames.Append(",");
+			}
+			TotalALLNames.Append(StructContent);
+		}
+		CurrentStruct = CurrentStruct->GetSuperStruct();
 	}
 
 	if (DefaultAsEmpty && TotalALLNames.IsEmpty())
@@ -248,7 +269,7 @@ FString UObjectToLuaParser::GetPropertyValueLuaStr(UProperty* Property, void* Ob
 		FString MapStr = "{";
 		for (int i = 0; i < MapHelper.Num(); i++)
 		{
-			KeyName = GetPropertyValueLuaStr(MapProperty->KeyProp, MapHelper.GetKeyPtr(i), DefaultAsEmpty);
+			KeyName = GetPropertyValueLuaStr(MapProperty->KeyProp, MapHelper.GetKeyPtr(i), false);
 			if (KeyName.IsEmpty())
 			{
 				continue;
@@ -404,14 +425,40 @@ FString UObjectToLuaParser::GetPropertyValueLuaStr(UProperty* Property, void* Ob
 	}
 	else if (UEnumProperty * EnumProperty = Cast<UEnumProperty>(Property))
 	{
-		uint8 tempint8 = GetPropertyValue<uint8>(Property, Object);
-		if (DefaultAsEmpty && tempint8 == 0)
+		const UEnum* Enum = EnumProperty->GetEnum();
+		const UNumericProperty* UnderlyingProp = EnumProperty->GetUnderlyingProperty();
+		const int64 EnumValue = UnderlyingProp->GetSignedIntPropertyValue(Property->ContainerPtrToValuePtr<void>(Object));
+		if (Enum->IsValidEnumValue(EnumValue))
 		{
-			return FString();
+			if (DefaultAsEmpty && EnumValue == 0)
+			{
+				return FString();
+			}
+			else
+			{
+				return FString::FromInt(EnumValue);
+			}
 		}
 		else
 		{
-			return FString::FromInt(tempint8);
+			// For array and map value property, Object is the value of enum
+			uint8 Value = *(uint8*)Object;
+			if (Enum->IsValidEnumValue(Value))
+			{
+				if (DefaultAsEmpty && Value == 0)
+				{
+					return FString();
+				}
+				else
+				{
+					return FString::FromInt(Value);
+				}
+			}
+			else
+			{
+				UE_LOG(ObjectToLua, Warning, TEXT("Unrecognized Enum Property: %s Value: %d"), *Property->GetName(), EnumValue)
+				return FString();
+			}
 		}
 	}
 
@@ -426,419 +473,367 @@ FString UObjectToLuaParser::GetPropertyValueLuaStr(UProperty* Property, void* Ob
 	}
 }
 
-void UObjectToLuaParser::CheckSetType(UProperty* Property, void* Object, FString value)
+void UObjectToLuaParser::GetKeyValueFromLuaStr(const FString& LuaStr, TMap<FString, FString>& KeyValue)
+{
+	FString RestStr = LuaStr;
+	//å»æ‰å‰åæœ€å¤–å±‚çš„å¤§æ‹¬å·
+	if (RestStr[0] == '{')
+	{
+		RestStr = RestStr.Mid(1, RestStr.Len() - 2);
+	}
+	FString KeyStr;
+	TArray<float> ParamArr;
+	while (RestStr.Split("=", &KeyStr, &RestStr))
+	{
+		if (KeyStr[0] == TCHAR('[') && KeyStr[KeyStr.Len() - 1] == TCHAR(']'))
+		{
+			KeyStr = KeyStr.Mid(1, KeyStr.Len() - 2);
+		}
+		switch (RestStr[0])
+		{
+		case TCHAR('\''):
+		{
+			//å­—ç¬¦ä¸²
+			int32 index = 0;
+			do
+			{
+				index = RestStr.Find("'", ESearchCase::CaseSensitive, ESearchDir::FromStart, index + 1);
+			} while (index > 0 && IsParaphraseChar(RestStr, index));
+			FString ValueStr = RestStr.Left(index + 1);
+			KeyValue.Add(KeyStr, ValueStr);
+			RestStr = RestStr.Right(RestStr.Len() - index - 1);
+			if (!RestStr.IsEmpty())
+			{
+				if (RestStr[0] != TCHAR(','))
+				{
+					UE_LOG(LogTemp, Warning, TEXT("RestStr not correct: %s"), *RestStr);
+				}
+				RestStr = RestStr.Right(RestStr.Len() - 1);
+			}
+			break;
+		}
+		case TCHAR('{'):
+		{
+			//æ•°ç»„ã€å­—å…¸ã€Object
+			int BraceNum = 1;
+			int i = 1;
+			for (i = 1; i < RestStr.Len() && BraceNum > 0; i++)
+			{
+				switch (RestStr[i])
+				{
+				case TCHAR('\''):
+				{
+					do
+					{
+						i++;
+					} while (!(RestStr[i] == TCHAR('\'') && !IsParaphraseChar(RestStr, i)));
+					break;
+				}
+				case TCHAR('{'):
+					BraceNum++;
+					break;
+				case TCHAR('}'):
+					BraceNum--;
+					break;
+				default:
+					break;
+				}
+			}
+			FString ValueStr = RestStr.Left(i);
+			KeyValue.Add(KeyStr, ValueStr);
+			RestStr = RestStr.Right(RestStr.Len() - i - 1);
+			break;
+		}
+		default:
+		{
+			//æ™®é€šå˜é‡
+			FString ValueStr;
+			if (RestStr.Split(",", &ValueStr, &RestStr))
+			{
+				KeyValue.Add(KeyStr, ValueStr);
+			}
+			else
+			{
+				KeyValue.Add(KeyStr, RestStr);
+				RestStr.Empty();
+			}
+			break;
+		}
+
+		}
+
+	}
+}
+
+void UObjectToLuaParser::GetArrayFromLuaStr(const FString& LuaStr, TArray<FString>& Arr)
+{
+	FString RestStr = LuaStr;
+	//å»æ‰å‰åæœ€å¤–å±‚çš„å¤§æ‹¬å·
+	if (RestStr[0] == TCHAR('{'))
+	{
+		RestStr = RestStr.Mid(1, RestStr.Len() - 2);
+	}
+
+	int Left = 0;
+	for (int i = 0; i < RestStr.Len(); i++)
+	{
+		switch (RestStr[i])
+		{
+		case TCHAR(','):
+		{
+			Arr.Add(RestStr.Mid(Left, i - Left));
+			Left = i + 1;
+			break;
+		}
+		case TCHAR('{'):
+		{
+			int BraceNum = 1;
+			while (BraceNum > 0 && i < RestStr.Len())
+			{
+				i++;
+				switch (RestStr[i])
+				{
+				case TCHAR('\''):
+				{
+					do
+					{
+						i++;
+					} while (!(RestStr[i] == TCHAR('\'') && !IsParaphraseChar(RestStr, i)));
+					break;
+				}
+				case TCHAR('{'):
+					BraceNum++;
+					break;
+				case TCHAR('}'):
+					BraceNum--;
+					break;
+				default:
+					break;
+				}
+			}
+			break;
+		}
+		case TCHAR('\''):
+		{
+			do
+			{
+				i++;
+			} while (!(RestStr[i] == TCHAR('\'') && !IsParaphraseChar(RestStr, i)));
+			break;
+		}
+		}
+	}
+	Arr.Add(RestStr.Right(RestStr.Len() - Left));
+}
+
+void UObjectToLuaParser::CheckSetType(UProperty* Property, void* Object, FString LuaStr)
 {
 	if (Cast<UBoolProperty>(Property))
 	{
-		bool tempBool = value.ToBool();
+		bool tempBool = LuaStr.ToBool();
 		SetPropertyValue(Property, Object, tempBool);
 	}
 	else if (Cast<UIntProperty>(Property))
 	{
-		int32 tempInt = FCString::Atoi(*value);
+		int32 tempInt = FCString::Atoi(*LuaStr);
 		SetPropertyValue(Property, Object, tempInt);
 	}
 	else if (Cast<UFloatProperty>(Property))
 	{
-		float tempFloat = FCString::Atof(*value);
+		float tempFloat = FCString::Atof(*LuaStr);
 		SetPropertyValue(Property, Object, tempFloat);
 	}
 	else if (Cast<UStrProperty>(Property))
 	{
-		value.RemoveAt(0, 1);
-		value.RemoveAt(value.Len() - 1, 1);
-		SetPropertyValue(Property, Object, value);
+		SetPropertyValue(Property, Object, LuaStr.Mid(1, LuaStr.Len() - 2));
 	}
 	else if (UArrayProperty* ArrayProperty = Cast<UArrayProperty>(Property))
 	{
-		value.RemoveAt(0, 1);
-		value.RemoveAt(value.Len() - 1, 1);
-
 		FScriptArrayHelper ArrayHelper(ArrayProperty, ArrayProperty->ContainerPtrToValuePtr<void>(Object));
 		
-		int numOfArray = 0;//ÉèÖÃµÄÄ¿±êÊı×éµÄÔªËØ¸öÊı
-		FString temArrayVal;
-		
-		int flags = 0;
-		for (int i = 0; i < value.Len(); i++)
+		TArray<FString> ValueArr;
+		GetArrayFromLuaStr(LuaStr, ValueArr);
+
+		//ç›®æ ‡æ•°ç»„å…ƒç´ ä¸ªæ•°å¤§äº0 éœ€è¦é‡æ–°è®¾ç½®æ•°ç»„å¤§å°
+		if (ValueArr.Num() >= 0)
 		{
-			if (value[i] == '{')
-			{
-				flags++;
-			}
-			if (value[i] == '}')
-			{
-				flags--;
-			}
-			if (value[i] == ',' && flags == 0)
-			{
-				numOfArray++;
-			}
-		}
-		flags = 0;
-		//Ä¿±êÊı×éÔªËØ¸öÊı´óÓÚ0 ĞèÒªÖØĞÂÉèÖÃÊı×é´óĞ¡
-		if (numOfArray >= 0)
-		{
-			ArrayHelper.Resize(numOfArray);
+			ArrayHelper.Resize(ValueArr.Num());
 		}
 		int count = 0;//
-		//ÒÀ´ÎÉèÖÃÊı×éµÄÃ¿¸öÔªËØ
+		//ä¾æ¬¡è®¾ç½®æ•°ç»„çš„æ¯ä¸ªå…ƒç´ 
 		for (int i = 0; i < ArrayHelper.Num(); i++)
 		{
-			//´¦Àívalue£¬È¡³ö¶ÔÓ¦Ë÷ÒıµÄÔªËØÖµ
-			for (; count < value.Len(); count++)
-			{
-				if (value[count] == '{')
-				{
-					flags++;
-				}
-				if (value[count] == '}')
-				{
-					flags--;
-				}
-				if (value[count] != '{' && value[count] != '}')
-				{
-					//Óöµ½¶ººÅÌø¹ı
-					if (value[count] == ',' && flags == 0)
-					{
-						count++;
-						break;
-					}
-					else if (value[count] == ',' && flags != 0)
-					{
-						temArrayVal += value[count];
-						continue;
-					}
-					temArrayVal += value[count];
-				}
-			}
 			if (UObjectProperty* tempObjectProperty = Cast<UObjectProperty>(ArrayProperty->Inner))
 			{
 				void* ValuePtr = ArrayHelper.GetRawPtr(i);
 				//CheckSetType(ArrayProperty->Inner, ValuePtr, temArrayVal);
 				UClass* tempClass = tempObjectProperty->PropertyClass;
 				UObject* object = NewObject<UObject>(tempClass, tempClass);
-				
-				if (temArrayVal[0] != '{' && temArrayVal[temArrayVal.Len() - 1] != '}')
-				{
-					temArrayVal = "{" + temArrayVal + "}";
-				}
-				object = SetObj(object, temArrayVal);
+				LuaStringToSetUObject(object, ValueArr[i]);
 
 				UProperty* tempProperty = ArrayProperty->Inner;
 
 				/*UObject* SourceAddr = tempProperty->ContainerPtrToValuePtr<UObject>(ValuePtr);
 				SourceAddr = object;*/
 				*tempProperty->ContainerPtrToValuePtr<UObject*>(ValuePtr) = object;
-				temArrayVal.Empty();
 			}
 			else
 			{
 				void* ValuePtr = ArrayHelper.GetRawPtr(i);
-				CheckSetType(ArrayProperty->Inner, ValuePtr, temArrayVal);
-				temArrayVal.Empty();
+				CheckSetType(ArrayProperty->Inner, ValuePtr, ValueArr[i]);
 			}
 		}
 	}
 	else if (UMapProperty* MapProperty = Cast<UMapProperty>(Property))
 	{
-		//----½øÒ»²½´¦ÀímapµÄ×Ö·û´®
-		TArray<FString> mapKey;//´æ·ÅkeyÖµ
-		TArray<FString> mapValue;//´æ·ÅvalueÖµ
-		FString mapK;//ÁÙÊ±´æ·ÅmapkeyÖµ
-		FString mapV;//ÁÙÊ±´æ·ÅmapvalueÖµ
+		TMap<FString, FString> KV;
 
-		//È¥µôÇ°ºóµÄ´óÀ¨ºÅ
-		value.RemoveAt(0, 1);
-		value.RemoveAt(value.Len()-1, 1);
-
-		int flagForLeft = 0;//±ê¼Ç×óÖĞÀ¨ºÅ
-
-		//²ğ·ÖkeyºÍvalue
-		for (int i = 0; i < value.Len(); i++)
-		{
-			if (value[i] == '[')
-			{
-				flagForLeft++;
-				continue;
-			}
-			if (value[i] == ']')
-			{
-				flagForLeft--;
-				continue;
-			}
-			if (flagForLeft && value[i] != ',')
-			{
-				mapK = mapK + value[i];
-			}
-			else if(value[i] != '=' && value[i] != ',')
-			{
-				mapV = mapV + value[i];
-			}
-			if (value[i] == ',')
-			{
-				mapKey.Add(mapK);
-				mapValue.Add(mapV);
-				mapK.Empty();
-				mapV.Empty();
-			}
-		}
+		GetKeyValueFromLuaStr(LuaStr, KV);
 
 		FScriptMapHelper MapHelper(MapProperty, MapProperty->ContainerPtrToValuePtr<void>(Object));
-		MapHelper.EmptyValues();//Çå¿ÕÔ­map
-		//¸ù¾İÄ¿±êMapÉèÖÃĞÂMapµÄ´óĞ¡
-		for (auto& i : mapKey)
+		MapHelper.EmptyValues();//æ¸…ç©ºåŸmap
+		
+		TArray<FString> Keys;
+		KV.GetKeys(Keys);
+		//è®¾ç½®keyå’Œvalueçš„å€¼
+		for (int i = 0; i < Keys.Num(); i++)
 		{
-			MapHelper.AddDefaultValue_Invalid_NeedsRehash();
+			int index = MapHelper.AddDefaultValue_Invalid_NeedsRehash();
+			CheckSetType(MapProperty->KeyProp, MapHelper.GetKeyPtr(index), Keys[i]);
+			//å½“Valueä¸ºæšä¸¾ç±»å‹æ—¶ä¼šè§£æå¤±è´¥ï¼Œéœ€è¦ä¿®å¤
+			CheckSetType(MapProperty->ValueProp, MapHelper.GetValuePtr(index), KV[Keys[i]]);
 		}
-		//ÉèÖÃkeyºÍvalueµÄÖµ
-		for (int i = 0; i < mapKey.Num(); i++)
-		{
-			CheckSetType(MapProperty->KeyProp, MapHelper.GetKeyPtr(i), mapKey[i]);
-			CheckSetType(MapProperty->ValueProp, MapHelper.GetKeyPtr(i), mapValue[i]);
-		}
+		MapHelper.Rehash();
 	}
 	else if (UStructProperty* StructProperty = Cast<UStructProperty>(Property))
 	{
 		if (StructProperty->Struct == TBaseStructure<FVector>::Get())
 		{
 			FString tempFv;
-			TArray<float> Fv;
-			for (int i = 0; i < value.Len(); i++)
+			TMap<FString, float> Fv;
+
+			FString KeyStr;
+			FString NumStr;
+			FString RestStr = LuaStr.StartsWith("{") ? LuaStr.Mid(1, LuaStr.Len() - 2) : LuaStr;
+			while (RestStr.Split(",", &NumStr, &RestStr))
 			{
-				if ((value[i] >= '0' && value[i] <= '9') || value[i] == '.')
-				{
-					tempFv = tempFv + value[i];
-				}
-				else if(value[i] == ',')
-				{
-					Fv.Add(FCString::Atof(*tempFv));
-					tempFv.Empty();
-					continue;
-				}
+				NumStr.Split("=", &KeyStr, &NumStr);
+				Fv.Add(KeyStr, FCString::Atof(*NumStr));
 			}
-			SetPropertyValue(Property, Object, FVector(Fv[0], Fv[1], Fv[2]));
+			RestStr.Split("=", &KeyStr, &NumStr);
+			Fv.Add(KeyStr, FCString::Atof(*NumStr));
+			SetPropertyValue(Property, Object, FVector(Fv["X"], Fv["Y"], Fv["Z"]));
 		}
 		else if (StructProperty->Struct == TBaseStructure<FRotator>::Get())
 		{
 			FString tempFr;
-			TArray<float> Fr;
-			for (int i = 0; i < value.Len(); i++)
+			TMap<FString, float> Fv;
+			FString KeyStr;
+			FString NumStr;
+			FString RestStr = LuaStr;
+			while (RestStr.Split(",", &NumStr, &RestStr))
 			{
-				if ((value[i] >= '0' && value[i] <= '9') || value[i] == '.')
-				{
-					tempFr = tempFr + value[i];
-				}
-				else if (value[i] == ',')
-				{
-					Fr.Add(FCString::Atof(*tempFr));
-					tempFr.Empty();
-					continue;
-				}
+				NumStr.Split("=", &KeyStr, &NumStr);
+				Fv.Add(KeyStr, FCString::Atof(*NumStr));
 			}
-			SetPropertyValue(Property, Object, FRotator(Fr[0], Fr[1], Fr[2]));
+			RestStr.Split("=", &KeyStr, &NumStr);
+			Fv.Add(KeyStr, FCString::Atof(*NumStr));
+			SetPropertyValue(Property, Object, FRotator(Fv["Pitch"], Fv["Yaw"], Fv["Roll"]));
 		}
 		else if (StructProperty->Struct == TBaseStructure<FSoftObjectPath>::Get())
 		{
-			value.RemoveAt(0, 1);
-			value.RemoveAt(value.Len() - 1, 1);
-			SetPropertyValue(Property, Object, FSoftObjectPath(value));
+			LuaStr = LuaStr.Mid(1, LuaStr.Len() - 2);
+			SetPropertyValue(Property, Object, FSoftObjectPath(LuaStr));
 		}
 		else if (StructProperty->Struct == TBaseStructure<FSoftClassPath>::Get())
 		{
-			value.RemoveAt(0, 1);
-			value.RemoveAt(value.Len() - 1, 1);
-			SetPropertyValue(Property, Object, FSoftClassPath(value));
+			LuaStr = LuaStr.Mid(1, LuaStr.Len() - 2);
+			SetPropertyValue(Property, Object, FSoftClassPath(LuaStr));
+		}
+		else if (StructProperty->Struct->IsNative())
+		{
+			CheckSetStruct(StructProperty->Struct, Object, LuaStr);
 		}
 	}
 	else if (USetProperty* SetProperty = Cast<USetProperty>(Property))
 	{
-		//----½øÒ»²½´¦Àím×Ö·û´®
-		TArray<FString> setKey;//´æ·ÅkeyÖµ
+		TMap<FString, FString> KV;
 
-		//È¥µôÇ°ºóµÄ´óÀ¨ºÅ
-		value.RemoveAt(0, 1);
-		value.RemoveAt(value.Len() - 1, 1);
+		GetKeyValueFromLuaStr(LuaStr, KV);
 
 		FScriptSetHelper setHelper(SetProperty, SetProperty->ContainerPtrToValuePtr<void>(Object));
-		
-		//°´ÕÕ¶ººÅ²ğ·Ö
-		FString tempFv="";
-		for (int i = 0; i < value.Len(); i++)
-		{
-			if (value[i] != ',')
-			{
-				tempFv += value[i];
-			}
-			else if (value[i] == ',')
-			{
-				//È¥µô=true
-				//tempFv.RemoveAt(0, 1);
-				tempFv.RemoveAt(tempFv.Len() - 5, 5);
-
-				setKey.Add(tempFv);
-				tempFv.Empty();
-				continue;
-			}
-		}
-
 		setHelper.EmptyElements();
 
-		for (int i = 0; i < setKey.Num(); i++)
+		TArray<FString> Keys;
+		KV.GetKeys(Keys);
+		for (int i = 0; i < Keys.Num(); i++)
 		{	
 			setHelper.AddUninitializedValue();
 			void* valuePtr = setHelper.GetElementPtr(i);
-			CheckSetType(SetProperty->ElementProp, valuePtr, setKey[i]);
+			CheckSetType(SetProperty->ElementProp, valuePtr, Keys[i]);
 		}
 	}
 	else if (UEnumProperty* EnumProperty = Cast<UEnumProperty>(Property))
 	{
 		UEnum* tempEnum = EnumProperty->GetEnum();
-		int32 strint = FCString::Atoi(*value);
-		FName name = tempEnum->GetNameByValue(strint);
+		int64 strint = FCString::Atoi(*LuaStr);
+		//FName name = tempEnum->GetNameByValue(strint);
 		SetPropertyValue(Property, Object, strint);
+		//EnumProperty->GetUnderlyingProperty()->SetIntPropertyValue(Object, strint);
 	}
 	else if (UObjectProperty* ObjectProperty = Cast<UObjectProperty>(Property))
 	{
-		if (value[0] != '{' && value[value.Len()-1] != '}')
-		{
-			value = "{" + value + "}";
-		}
 		UObject* object = GetPropertyValue<UObject*>(ObjectProperty, Object);
 		if (object == NULL)
 		{
 			object = NewObject<UObject>(ObjectProperty->PropertyClass, ObjectProperty->PropertyClass);
 		}
-		SetObj(object, value);
+		LuaStringToSetUObject(object, LuaStr);
 	}
 }
 
-UObject* UObjectToLuaParser::SetObj(UObject* object, FString nameAndValue)
+void UObjectToLuaParser::CheckSetStruct(UStruct* Struct, void* Object, FString LuaStr)
 {
-	UObject* Object = object;
+	TMap<FString, FString> KeyValue;
+	GetKeyValueFromLuaStr(LuaStr, KeyValue);
 
-	nameAndValue.RemoveAt(0, 1);
-	nameAndValue.RemoveAt(nameAndValue.Len() - 1, 1);
-	FString name;
-	FString value;
-	TArray<FString> nameArray;
-	TArray<FString> valueArray;
-	TMap<FString, FString> NaVMap;
-	int flags = 0;
-	int leftBigPara = 0;
-	int flagForApo = 0;
-
-	//°Ñ×Ö·û´®²ğºÃ ·Å½ømapÀï
-	for (int i = 0; i < nameAndValue.Len(); i++)
-	{ 
-
-		if (nameAndValue[i] == '=')
-		{
-			flags++;
-			if (flags > 1)
-			{
-				value += nameAndValue[i];
-			}
-		}
-
-		if (nameAndValue[i] != '=')
-		{
-			if (nameAndValue[i] == '}')
-			{
-				leftBigPara--;
-			}
-
-			if (flags)//µÈºÅÊıÁ¿´óÓÚÁã
-			{
-				value += nameAndValue[i];
-			}
-			else
-			{
-				name += nameAndValue[i];
-			}
-
-			if (leftBigPara == 0)
-			{
-				if (nameAndValue[i] == '}')
-				{
-					i++;
-					nameArray.Add(name);
-					valueArray.Add(value);
-					NaVMap.Add(name, value);
-					name.Empty();
-					value.Empty();
-					leftBigPara = 0;
-					flags = 0;
-					continue;
-				}
-
-				if (flags == 1 && nameAndValue[i] == ',')
-				{
-					value.RemoveAt(value.Len() - 1, 1);
-					nameArray.Add(name);
-					valueArray.Add(value);
-					NaVMap.Add(name, value);
-					name.Empty();
-					value.Empty();
-					leftBigPara = 0;
-					flags = 0;
-					continue;
-				}
-
-				if (flags >= 1 && leftBigPara == 0 && nameAndValue[i] == ',' && nameAndValue[i - 1] == '\'')
-				{
-					value.RemoveAt(value.Len() - 1, 1);
-					nameArray.Add(name);
-					valueArray.Add(value);
-					NaVMap.Add(name, value);
-					name.Empty();
-					value.Empty();
-					leftBigPara = 0;
-					flags = 0;
-					continue;
-				}
-			}
-			continue;
-		}
-		else
-		{
-			if (nameAndValue[i + 1] == '{')
-			{
-				leftBigPara++;
-				if (nameAndValue[i] != '=')
-				{
-					value += nameAndValue[i];
-				}
-			}
-		}
-	}
-
-	if (object==NULL || object->GetClass() == NULL)
+	UStruct* CurrentStruct = Struct;
+	while (CurrentStruct)
 	{
-		return object;
-	}
-	//¿ªÊ¼set
-	for (TFieldIterator<UProperty> PropertyIterator(Object->GetClass()); PropertyIterator; ++PropertyIterator)
-	{
-		UProperty* Property = *PropertyIterator;
-		FString PropertyName = Property->GetName();
-
-		for (int i = 0; i < NaVMap.Num(); i++)
+		UField* Field = CurrentStruct->Children;
+		while (Field)
 		{
-			if (PropertyName == nameArray[i])
+			// Get Blueprint name
+			if (UProperty * Property = Cast<UProperty>(Field))
 			{
-				CheckSetType(Property, Object, valueArray[i]);
-				break;
+				FString PropertyName = Property->GetName();
+				if (KeyValue.Contains(PropertyName))
+				{
+					CheckSetType(Property, Object, KeyValue[PropertyName]);
+				}
 			}
-		}
-	}
 
-	return Object;
+			// Go to next member
+			Field = Field->Next;
+		}
+		CurrentStruct = CurrentStruct->GetSuperStruct();
+	}
+}
+
+bool UObjectToLuaParser::IsParaphraseChar(const FString& Str, int Index)
+{
+	int Count = 0;
+	int i = Index - 1;
+	while (i >= 0 && Str[i] == TCHAR('\\'))
+	{
+		Count++;
+	}
+	return Count % 2 == 1;
 }
 
 FString UObjectToLuaParser::UObjectToLuaString(UObject* Object, bool DefaultAsEmpty)
 {
-	return FString::Printf(TEXT("return %s"), *ToObjectStr(Object, DefaultAsEmpty));
+	return FString::Printf(TEXT("return%s"), *ToObjectStr(Object, DefaultAsEmpty));
 }
 
 FString UObjectToLuaParser::UObjectToLuaStringWithIgnore(UObject * Object, FString Ignore, bool DefaultAsEmpty)
@@ -861,19 +856,19 @@ FString UObjectToLuaParser::UObjectToLuaStringWithIgnore(UObject * Object, FStri
 	FString TotalALLNames;
 	int ElNum = 0;
 
-	//±éÀúËùÓĞ±»UProperty±ê¼ÇµÄ³ÉÔ±
+	//éå†æ‰€æœ‰è¢«UPropertyæ ‡è®°çš„æˆå‘˜
 	for (TFieldIterator<UProperty> PropertyIterator(Object->GetClass()); PropertyIterator; ++PropertyIterator)
 	{
 		UProperty* Property = *PropertyIterator;
 		FString PropertyName = Property->GetName();
 
-		//ÅĞ¶ÏĞèÒªºöÂÔµÄÊôĞÔÃû³Æ
+		//åˆ¤æ–­éœ€è¦å¿½ç•¥çš„å±æ€§åç§°
 		if (ignoreArray.Contains(PropertyName))
 		{
 			continue;
 		}
 
-		//ÅĞ¶ÏUPropertyÀàĞÍ
+		//åˆ¤æ–­UPropertyç±»å‹
 		FString KVStr = CheckUproperType(Property, Object, DefaultAsEmpty);
 		if (!KVStr.IsEmpty())
 		{
@@ -891,7 +886,7 @@ FString UObjectToLuaParser::UObjectToLuaStringWithIgnore(UObject * Object, FStri
 	}
 	else
 	{
-		return FString::Printf(TEXT("return {%s}"), *TotalALLNames);
+		return FString::Printf(TEXT("return{%s}"), *TotalALLNames);
 	}
 }
 
@@ -915,7 +910,7 @@ FString UObjectToLuaParser::GetAimValue(UObject* Object, FString Aim)
 {
 	FString TotalALLNames;
 
-	//±éÀúËùÓĞ±»UProperty±ê¼ÇµÄ³ÉÔ±
+	//éå†æ‰€æœ‰è¢«UPropertyæ ‡è®°çš„æˆå‘˜
 	for (TFieldIterator<UProperty> PropertyIterator(Object->GetClass()); PropertyIterator; ++PropertyIterator)
 	{
 		UProperty* Property = *PropertyIterator;
@@ -949,28 +944,27 @@ UObject* UObjectToLuaParser::SetAimValue(UClass* className, FString Aim, FString
 
 	UObject* Object = NewObject<UObject>(className, className);
 
-	//Èç¹ûÓĞreturn¿ªÍ·µÄ»°¾ÍÈ¥µô
+	//å¦‚æœæœ‰returnå¼€å¤´çš„è¯å°±å»æ‰
 	nameAndValue = nameAndValue.Replace(TEXT("return"), TEXT(""));
 
-	//È¥µôÇ°ºó×îÍâ²ãµÄ´óÀ¨ºÅ
+	//å»æ‰å‰åæœ€å¤–å±‚çš„å¤§æ‹¬å·
 	if (nameAndValue[0] == '{')
 	{
 		nameAndValue.RemoveAt(0, 1);
 		nameAndValue.RemoveAt(nameAndValue.Len() - 1, 1);
 	}
 
-	FString name;//ÁÙÊ±´æ·Å±äÁ¿Ãû
-	FString value;//ÁÙÊ±´æ·Å±äÁ¿Öµ
-	TArray<FString> nameArray;//±äÁ¿ÃûµÄÊı×é
-	TArray<FString> valueArray;//±äÁ¿ÖµµÄÊı×é
+	FString name;//ä¸´æ—¶å­˜æ”¾å˜é‡å
+	FString value;//ä¸´æ—¶å­˜æ”¾å˜é‡å€¼
+	TArray<FString> nameArray;//å˜é‡åçš„æ•°ç»„
+	TArray<FString> valueArray;//å˜é‡å€¼çš„æ•°ç»„
 	TMap<FString, FString> NaVMap;
-	int flags = 0;//±ê¼ÇµÈºÅ
-	int leftBigPara = 0;//±ê¼Ç{
+	int flags = 0;//æ ‡è®°ç­‰å·
+	int leftBigPara = 0;//æ ‡è®°{
 
-	//°Ñ×Ö·û´®²ğºÃ ·Å½øÁ½¸öÊı×éÀï
+	//æŠŠå­—ç¬¦ä¸²æ‹†å¥½ æ”¾è¿›ä¸¤ä¸ªæ•°ç»„é‡Œ
 	for (int i = 0; i < nameAndValue.Len(); i++)
 	{
-
 		if (nameAndValue[i] == '=')
 		{
 			flags++;
@@ -987,7 +981,7 @@ UObject* UObjectToLuaParser::SetAimValue(UClass* className, FString Aim, FString
 				leftBigPara--;
 			}
 
-			if (flags)//µÈºÅÊıÁ¿´óÓÚÁã
+			if (flags)//ç­‰å·æ•°é‡å¤§äºé›¶
 			{
 				value += nameAndValue[i];
 			}
@@ -1053,7 +1047,7 @@ UObject* UObjectToLuaParser::SetAimValue(UClass* className, FString Aim, FString
 		}
 	}
 
-	//¿ªÊ¼set
+	//å¼€å§‹set
 	for (TFieldIterator<UProperty> PropertyIterator(Object->GetClass()); PropertyIterator; ++PropertyIterator)
 	{
 		UProperty* Property = *PropertyIterator;
@@ -1075,144 +1069,29 @@ UObject* UObjectToLuaParser::SetAimValue(UClass* className, FString Aim, FString
 
 UObject * UObjectToLuaParser::LuaStringToUObject(UClass * className, FString nameAndValue)
 {
-
 	UObject* Object = NewObject<UObject>(className, className);
 	Object = UObjectToLuaParser::LuaStringToSetUObject(Object, nameAndValue);
 	return Object;
 }
 
-UObject * UObjectToLuaParser::LuaStringToSetUObject(UObject * objcet, FString nameAndValue)
+UObject * UObjectToLuaParser::LuaStringToSetUObject(UObject * Object, FString nameAndValue)
 {
-	UObject* Object = objcet;
+	//å¦‚æœæœ‰returnå¼€å¤´çš„è¯å°±å»æ‰
+	FString ParsingStr = nameAndValue.Replace(TEXT("return"), TEXT(""));
 
-	//Èç¹ûÓĞreturn¿ªÍ·µÄ»°¾ÍÈ¥µô
-	nameAndValue = nameAndValue.Replace(TEXT("return"), TEXT(""));
-
-	//È¥µôÇ°ºó×îÍâ²ãµÄ´óÀ¨ºÅ
-	if (nameAndValue[0] == '{')
-	{
-		nameAndValue.RemoveAt(0, 1);
-		nameAndValue.RemoveAt(nameAndValue.Len() - 1, 1);
-	}
-
-	FString name;//ÁÙÊ±´æ·Å±äÁ¿Ãû
-	FString value;//ÁÙÊ±´æ·Å±äÁ¿Öµ
-	TArray<FString> nameArray;//±äÁ¿ÃûµÄÊı×é
-	TArray<FString> valueArray;//±äÁ¿ÖµµÄÊı×é
 	TMap<FString, FString> NaVMap;
-	int flags = 0;//±ê¼ÇµÈºÅ
-	int leftBigPara = 0;//±ê¼Ç{
+	GetKeyValueFromLuaStr(ParsingStr, NaVMap);
 
-	//°Ñ×Ö·û´®²ğºÃ ·Å½øÁ½¸öÊı×éÀï
-	for (int i = 0; i < nameAndValue.Len(); i++)
-	{
-
-		if (nameAndValue[i] == '=')
-		{
-			flags++;
-			if (flags > 1)
-			{
-				value += nameAndValue[i];
-			}
-		}
-		if (nameAndValue[i] == '{' && nameAndValue[i-1] == ',')
-		{
-			leftBigPara++;
-		
-		}
-
-		if (nameAndValue[i] != '=')
-		{
-			if (nameAndValue[i] == '}')
-			{
-				leftBigPara--;
-			}
-
-			if (flags)//µÈºÅÊıÁ¿´óÓÚÁã
-			{
-				value += nameAndValue[i];
-			}
-			else
-			{
-				name += nameAndValue[i];
-			}
-
-			if (leftBigPara == 0)
-			{
-				if (nameAndValue[i] == '}')
-				{
-					i++;
-					//value.RemoveAt(0, 1);
-					nameArray.Add(name);
-					valueArray.Add(value);
-					NaVMap.Add(name, value);
-					name.Empty();
-					value.Empty();
-					leftBigPara = 0;
-					flags = 0;
-					continue;
-				}
-
-				if (flags == 1 && nameAndValue[i] == ',')
-				{
-					value.RemoveAt(value.Len() - 1, 1);
-					nameArray.Add(name);
-					valueArray.Add(value);
-					NaVMap.Add(name, value);
-					name.Empty();
-					value.Empty();
-					leftBigPara = 0;
-					flags = 0;
-					continue;
-				}
-
-				if (flags >= 1 && leftBigPara == 0 && nameAndValue[i] == ',' && nameAndValue[i - 1] == '\'')
-				{
-					value.RemoveAt(value.Len() - 1, 1);
-					nameArray.Add(name);
-					valueArray.Add(value);
-					NaVMap.Add(name, value);
-					name.Empty();
-					value.Empty();
-					leftBigPara = 0;
-					flags = 0;
-					continue;
-				}
-			}
-			continue;
-		}
-		else
-		{
-			if (nameAndValue[i + 1] == '{')
-			{
-				leftBigPara++;
-				if (nameAndValue[i + 2] == '{')
-				{
-					leftBigPara++;
-				}
-				if (nameAndValue[i] != '=')
-				{
-					value += nameAndValue[i];
-				}
-			}
-		}
-	}
-
-	//¿ªÊ¼set
+	//å¼€å§‹set
 	for (TFieldIterator<UProperty> PropertyIterator(Object->GetClass()); PropertyIterator; ++PropertyIterator)
 	{
 		UProperty* Property = *PropertyIterator;
 		FString PropertyName = Property->GetName();
 
-		for (int i = 0; i < NaVMap.Num(); i++)
+		if (NaVMap.Contains(PropertyName))
 		{
-			if (PropertyName == nameArray[i])
-			{
-				CheckSetType(Property, Object, valueArray[i]);
-				break;
-			}
+			CheckSetType(Property, Object, NaVMap[PropertyName]);
 		}
-
 	}
 
 	return Object;

@@ -31,3 +31,5 @@
 *.out
 *.app
 UObjectToLua/Binaries/Win64/UE4Editor.modules
+
+.history/*
